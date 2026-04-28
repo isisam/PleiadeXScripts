@@ -135,6 +135,12 @@ chmod +x "$DESKTOP/監看 Delta.command"
 
 color_ok "  桌面捷徑已寫（cwd=$DELTA_DIR，啟動前自動 cat 兩個 md 生成 ~/.claude/CLAUDE.md）"
 
+# ---- Step 2.5: 立刻 cat 一次生成 ~/.claude/CLAUDE.md（Install 完即可看到）----
+color_ok "=== Step 2.5: 立刻 cat 兩 md 生成 ~/.claude/CLAUDE.md ==="
+mkdir -p "$HOME/.claude"
+cat "$DELTA_DIR/persona.md" "$DELTA_DIR/work_sop.md" > "$HOME/.claude/CLAUDE.md"
+echo "  ~/.claude/CLAUDE.md 已生成（$(wc -l < "$HOME/.claude/CLAUDE.md") 行）"
+
 # ---- Step 3: 拉 maid-watchdog.sh + 寫 launchd plist ----
 color_ok "=== Step 3: Watchdog 部署 ==="
 mkdir -p "$HOME/.claude"
