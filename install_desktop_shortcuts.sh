@@ -14,15 +14,19 @@ cat > "$DESKTOP/啟動 Delta.command" <<'INNER'
 #!/bin/bash
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 cd "$HOME"
-if command -v tmux >/dev/null 2>&1; then
-  if tmux has-session -t delta 2>/dev/null; then
-    osascript -e 'display notification "Delta tmux session 已存在（不重開）" with title "PleiadeX Delta"'
-  else
-    tmux new-session -d -s delta "claude"
-    osascript -e 'display notification "Delta agent 已背景啟動（tmux session: delta）" with title "PleiadeX Delta"'
-  fi
+if ! command -v tmux >/dev/null 2>&1; then
+  osascript -e 'display dialog "需先 brew install tmux\n\n打開 Terminal paste：\nbrew install tmux" buttons {"OK"} default button "OK" with icon caution'
+  exit 1
+fi
+if ! command -v claude >/dev/null 2>&1; then
+  osascript -e 'display dialog "需先裝 Claude Code\n\nbrew install node && npm install -g @anthropic-ai/claude-code" buttons {"OK"} default button "OK" with icon caution'
+  exit 1
+fi
+if tmux has-session -t delta 2>/dev/null; then
+  osascript -e 'display dialog "Delta tmux session 已存在 ✨\n\n雙擊「監看 Delta」連到既有 session" buttons {"OK"} default button "OK" with icon note'
 else
-  osascript -e 'display alert "需先 brew install tmux" message "桌機沒 tmux，請開 Terminal 跑 brew install tmux"'
+  tmux new-session -d -s delta "claude"
+  osascript -e 'display dialog "Delta agent 已背景啟動 ✨\n\n雙擊「監看 Delta」連看 claude UI\n首次連看會跳 trust folder 對話框，選 Yes 一次永久通行" buttons {"OK"} default button "OK" with icon note'
 fi
 INNER
 chmod +x "$DESKTOP/啟動 Delta.command"
