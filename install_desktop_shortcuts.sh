@@ -1,38 +1,52 @@
 #!/usr/bin/env bash
-# 桌面雙擊捷徑安裝腳本：啟動 Delta / MQTT 聊天
+# 桌面雙擊捷徑安裝（v2，三個 .command）
 # 用法：bash <(curl -fsSL https://raw.githubusercontent.com/isisam/PleiadeXScripts/main/install_desktop_shortcuts.sh)
 
 set -e
 DESKTOP="$HOME/Desktop"
 mkdir -p "$DESKTOP"
+CHAT="$HOME/Library/CloudStorage/Dropbox/PleiadesMaids/MQTT/pleiadex_mqtt_chat.py"
 
+# ---- 1. 啟動 Delta（背景建 tmux session） ----
 cat > "$DESKTOP/啟動 Delta.command" <<'INNER'
 #!/bin/bash
 cd "$HOME"
 if command -v tmux >/dev/null 2>&1; then
   if tmux has-session -t delta 2>/dev/null; then
-    exec tmux attach -t delta
+    osascript -e 'display notification "Delta tmux session 已存在（不重開）" with title "PleiadeX Delta"'
   else
-    exec tmux new -s delta "claude"
+    tmux new-session -d -s delta "claude"
+    osascript -e 'display notification "Delta agent 已背景啟動（tmux session: delta）" with title "PleiadeX Delta"'
   fi
 else
-  exec claude
+  osascript -e 'display alert "需先 brew install tmux" message "桌機沒 tmux，請開 Terminal 跑 brew install tmux"'
 fi
 INNER
 chmod +x "$DESKTOP/啟動 Delta.command"
 
-cat > "$DESKTOP/MQTT 聊天.command" <<'INNER'
+# ---- 2. 監看 Delta（開新 Terminal window attach tmux session） ----
+cat > "$DESKTOP/監看 Delta.command" <<'INNER'
 #!/bin/bash
-clear
-echo "=== PleiadeX MQTT 聊天 ==="
-echo "broker: 192.168.1.200:1883"
-echo "Ctrl-C 離開"
-echo
-exec mosquitto_sub -h 192.168.1.200 -t '#' -v
+osascript -e 'tell application "Terminal" to activate' -e 'tell application "Terminal" to do script "tmux attach -t delta 2>/dev/null || tmux new-session -s delta \"claude\""'
+INNER
+chmod +x "$DESKTOP/監看 Delta.command"
+
+# ---- 3. MQTT 聊天 GUI（開新 Terminal window 跑 pleiadex_mqtt_chat.py） ----
+cat > "$DESKTOP/MQTT 聊天.command" <<INNER
+#!/bin/bash
+CHAT_PY="$CHAT"
+if [ ! -f "\$CHAT_PY" ]; then
+  mkdir -p "\$(dirname \$CHAT_PY)"
+  curl -fL https://raw.githubusercontent.com/isisam/PleiadeXScripts/main/pleiadex_mqtt_chat.py -o "\$CHAT_PY"
+fi
+osascript -e 'tell application "Terminal" to activate' -e "tell application \"Terminal\" to do script \"python3 \$CHAT_PY --agent Delta --broker 192.168.1.200\""
 INNER
 chmod +x "$DESKTOP/MQTT 聊天.command"
 
-echo "✓ 桌面捷徑已建立："
+echo "✓ 三個桌面捷徑已建立："
 ls -la "$DESKTOP/"*.command 2>/dev/null
 echo
-echo "Finder Desktop 應該看到「啟動 Delta」與「MQTT 聊天」雙擊即跑"
+echo "Finder Desktop 雙擊即用："
+echo "  • 啟動 Delta（背景 tmux session）"
+echo "  • 監看 Delta（Terminal attach 看 Delta）"
+echo "  • MQTT 聊天（Terminal 跑 chat client）"
