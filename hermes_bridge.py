@@ -75,6 +75,7 @@ def on_connect(client, userdata, flags, rc):
         client.subscribe([
             ("pleiadex/broadcast", 1),
             (f"pleiadex/agents/{AGENT}/inbox", 1),
+            ("pleiadex/agents/Xeon/outbox", 1),  # 主人專屬廣播 channel（schema v1）
         ])
     else:
         print(f"[hermes] connect failed rc={rc}")
@@ -100,6 +101,9 @@ def on_message(client, userdata, msg):
     if msg.topic == f"pleiadex/agents/{AGENT}/inbox":
         kind = "DM"
         should_inject = True
+    elif msg.topic == "pleiadex/agents/Xeon/outbox":
+        kind = "from-master"
+        should_inject = True  # 主人廣播 channel 一律注入
     elif msg.topic == "pleiadex/broadcast":
         if AGENT in mentions or "all" in mentions:
             kind = f"@{AGENT}" if AGENT in mentions else "@all"
