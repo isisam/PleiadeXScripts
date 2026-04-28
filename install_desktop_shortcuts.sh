@@ -12,6 +12,7 @@ mkdir -p "$DESKTOP"
 # ---- 1. 啟動 Delta（背景建 tmux session） ----
 cat > "$DESKTOP/啟動 Delta.command" <<'INNER'
 #!/bin/bash
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 cd "$HOME"
 if command -v tmux >/dev/null 2>&1; then
   if tmux has-session -t delta 2>/dev/null; then
@@ -70,6 +71,7 @@ EOF
 
 cat > "$APP/Contents/MacOS/launcher" <<'INNER'
 #!/bin/bash
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 GUI_PY="$HOME/Library/CloudStorage/Dropbox/PleiadesMaids/MQTT/pleiadex_mqtt_gui.py"
 if [ ! -f "$GUI_PY" ]; then
   mkdir -p "$(dirname "$GUI_PY")"
