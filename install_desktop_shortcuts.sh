@@ -76,13 +76,26 @@ EOF
 cat > "$APP/Contents/MacOS/launcher" <<'INNER'
 #!/bin/bash
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
-GUI_PY="$HOME/Library/CloudStorage/Dropbox/PleiadesMaids/MQTT/pleiadex_mqtt_gui.py"
-if [ ! -f "$GUI_PY" ]; then
+LOG=/tmp/pleiadex_gui_launch.log
+{
+  echo "=== launch $(date) ==="
+  echo "PATH=$PATH"
+  echo "HOME=$HOME"
+  GUI_PY="$HOME/Library/CloudStorage/Dropbox/PleiadesMaids/MQTT/pleiadex_mqtt_gui.py"
+  # 強制每次重拉最新版（避免本地舊版）
   mkdir -p "$(dirname "$GUI_PY")"
-  curl -fL https://raw.githubusercontent.com/isisam/PleiadeXScripts/main/pleiadex_mqtt_gui.py -o "$GUI_PY"
+  curl -fsSL https://raw.githubusercontent.com/isisam/PleiadeXScripts/main/pleiadex_mqtt_gui.py -o "$GUI_PY"
+  echo "GUI_PY=$GUI_PY ($(wc -l < "$GUI_PY") lines)"
+  # 確保 paho-mqtt 裝好（macOS 26 Python 3.13）
+  pip3 install --user --quiet --break-system-packages paho-mqtt 2>&1 || pip3 install --user --quiet paho-mqtt 2>&1
+  echo "python3=$(which python3)"
+  echo "exec python3 $GUI_PY"
+} >> "$LOG" 2>&1
+
+# exec GUI；失敗時跳對話框告訴主人去看 log
+if ! /usr/bin/env python3 "$HOME/Library/CloudStorage/Dropbox/PleiadesMaids/MQTT/pleiadex_mqtt_gui.py" --agent DeltaMonitor --broker 192.168.1.200 >> "$LOG" 2>&1; then
+  osascript -e "display dialog \"GUI 啟動失敗，請看 /tmp/pleiadex_gui_launch.log\" buttons {\"OK\"} default button \"OK\" with icon stop"
 fi
-pip3 install --user --quiet --break-system-packages paho-mqtt 2>/dev/null || pip3 install --user --quiet paho-mqtt 2>/dev/null
-exec /usr/bin/env python3 "$GUI_PY" --agent Delta --broker 192.168.1.200
 INNER
 chmod +x "$APP/Contents/MacOS/launcher"
 
