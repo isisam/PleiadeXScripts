@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# 桌面雙擊捷徑安裝（v2，三個 .command）
+# 桌面雙擊捷徑安裝（v3）：
+#   1. 啟動 Delta.command（背景建 tmux session）
+#   2. 監看 Delta.command（開 Terminal attach tmux）
+#   3. MQTT 聊天.app（真 .app bundle，雙擊跳 Tkinter GUI 視窗，不開 Terminal）
 # 用法：bash <(curl -fsSL https://raw.githubusercontent.com/isisam/PleiadeXScripts/main/install_desktop_shortcuts.sh)
 
 set -e
 DESKTOP="$HOME/Desktop"
 mkdir -p "$DESKTOP"
-CHAT="$HOME/Library/CloudStorage/Dropbox/PleiadesMaids/MQTT/pleiadex_mqtt_chat.py"
 
 # ---- 1. 啟動 Delta（背景建 tmux session） ----
 cat > "$DESKTOP/啟動 Delta.command" <<'INNER'
@@ -31,22 +33,62 @@ osascript -e 'tell application "Terminal" to activate' -e 'tell application "Ter
 INNER
 chmod +x "$DESKTOP/監看 Delta.command"
 
-# ---- 3. MQTT 聊天 GUI（開新 Terminal window 跑 pleiadex_mqtt_chat.py） ----
-cat > "$DESKTOP/MQTT 聊天.command" <<INNER
-#!/bin/bash
-CHAT_PY="$CHAT"
-if [ ! -f "\$CHAT_PY" ]; then
-  mkdir -p "\$(dirname \$CHAT_PY)"
-  curl -fL https://raw.githubusercontent.com/isisam/PleiadeXScripts/main/pleiadex_mqtt_chat.py -o "\$CHAT_PY"
-fi
-osascript -e 'tell application "Terminal" to activate' -e "tell application \"Terminal\" to do script \"python3 \$CHAT_PY --agent Delta --broker 192.168.1.200\""
-INNER
-chmod +x "$DESKTOP/MQTT 聊天.command"
+# ---- 3. MQTT 聊天.app（真 macOS .app bundle，雙擊跳 GUI 視窗） ----
+APP="$DESKTOP/MQTT 聊天.app"
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/Resources"
 
-echo "✓ 三個桌面捷徑已建立："
+cat > "$APP/Contents/Info.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>launcher</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.alphamaid.PleiadeXMQTTGUI</string>
+  <key>CFBundleName</key>
+  <string>MQTT 聊天</string>
+  <key>CFBundleDisplayName</key>
+  <string>MQTT 聊天</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>13.0</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>LSUIElement</key>
+  <false/>
+</dict>
+</plist>
+EOF
+
+cat > "$APP/Contents/MacOS/launcher" <<'INNER'
+#!/bin/bash
+GUI_PY="$HOME/Library/CloudStorage/Dropbox/PleiadesMaids/MQTT/pleiadex_mqtt_gui.py"
+if [ ! -f "$GUI_PY" ]; then
+  mkdir -p "$(dirname "$GUI_PY")"
+  curl -fL https://raw.githubusercontent.com/isisam/PleiadeXScripts/main/pleiadex_mqtt_gui.py -o "$GUI_PY"
+fi
+pip3 install --user --quiet --break-system-packages paho-mqtt 2>/dev/null || pip3 install --user --quiet paho-mqtt 2>/dev/null
+exec /usr/bin/env python3 "$GUI_PY" --agent Delta --broker 192.168.1.200
+INNER
+chmod +x "$APP/Contents/MacOS/launcher"
+
+# 清 xattr 與 adhoc sign（保險）
+xattr -cr "$APP" 2>/dev/null || true
+codesign --force --deep --sign - "$APP" 2>/dev/null || true
+
+echo "✓ 桌面捷徑已建立："
 ls -la "$DESKTOP/"*.command 2>/dev/null
+ls -la "$DESKTOP/"*.app 2>/dev/null
 echo
 echo "Finder Desktop 雙擊即用："
-echo "  • 啟動 Delta（背景 tmux session）"
-echo "  • 監看 Delta（Terminal attach 看 Delta）"
-echo "  • MQTT 聊天（Terminal 跑 chat client）"
+echo "  • 啟動 Delta.command（背景 tmux session）"
+echo "  • 監看 Delta.command（Terminal attach 看 Delta）"
+echo "  • MQTT 聊天.app（雙擊跳 Tkinter GUI 視窗）"
