@@ -54,14 +54,25 @@ def save_seen(seen):
         print(f"[hermes] save_seen err: {e}", file=sys.stderr)
 
 
+def _find_tmux():
+    """找 tmux binary 絕對路徑（launchd 預設 PATH 不含 /opt/homebrew/bin → 找不到 tmux 命令；Beta 4/29 找到此 trap）"""
+    for p in ("/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"):
+        if os.path.exists(p):
+            return p
+    return "tmux"
+
+
+TMUX_BIN = _find_tmux()
+
+
 def tmux_inject(prompt):
-    """送一行 prompt 進 claude-imessage tmux session 主線。"""
+    """送一行 prompt 進 tmux session 主線。"""
     try:
         subprocess.run(
-            ["tmux", "send-keys", "-t", TMUX_SESSION, prompt, "Enter"],
+            [TMUX_BIN, "send-keys", "-t", TMUX_SESSION, prompt, "Enter"],
             check=False, timeout=5,
         )
-        print(f"[hermes] injected → {TMUX_SESSION}: {prompt[:80]}")
+        print(f"[hermes] injected → {TMUX_SESSION}: {prompt[:80]} (via {TMUX_BIN})")
     except Exception as e:
         print(f"[hermes] tmux inject err: {e}", file=sys.stderr)
 
