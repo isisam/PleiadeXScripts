@@ -12,6 +12,8 @@ Usage:
 
 Environment overrides:
   CHAT_DB          Default: ~/Library/Messages/chat.db
+  MAIL_ENVELOPE_INDEX Default: ~/Library/Mail/V10/MailData/Envelope Index
+  CALENDAR_CACHE   Default: ~/Library/Calendars/Calendar Cache
   M017_LOG_DIR     Default: first existing m017 log directory
   WORK_LOG_DIR     Default: ~/Library/CloudStorage/Dropbox/PleiadesMaids/Obsidian/AiNoteSystem/LTCWork/Records/WorkRecord
   DASHBOARD_FILE   Default: ~/Library/CloudStorage/Dropbox/PleiadesMaids/Obsidian/AiNoteSystem/LTCWork/Records/WorkRecord/Current(Xeon Dashboard).md
@@ -68,6 +70,8 @@ esac
 HOME_DIR="${HOME:-/Users/Alpha}"
 PLEIADES_ROOT="${PLEIADES_ROOT:-$HOME_DIR/Library/CloudStorage/Dropbox/PleiadesMaids}"
 CHAT_DB="${CHAT_DB:-$HOME_DIR/Library/Messages/chat.db}"
+MAIL_ENVELOPE_INDEX="${MAIL_ENVELOPE_INDEX:-$HOME_DIR/Library/Mail/V10/MailData/Envelope Index}"
+CALENDAR_CACHE="${CALENDAR_CACHE:-$HOME_DIR/Library/Calendars/Calendar Cache}"
 WORK_LOG_DIR="${WORK_LOG_DIR:-$HOME_DIR/Library/CloudStorage/Dropbox/PleiadesMaids/Obsidian/AiNoteSystem/LTCWork/Records/WorkRecord}"
 DASHBOARD_FILE="${DASHBOARD_FILE:-$WORK_LOG_DIR/Current(Xeon Dashboard).md}"
 REPORT_DIR="$PLEIADES_ROOT/MaidMemory/$MAID_NAME/kpi_reports"
@@ -83,7 +87,7 @@ fi
 
 mkdir -p "$REPORT_DIR"
 
-export MAID_NAME DISPLAY_NAME ROLE REPORT_DATE CHAT_DB M017_LOG_DIR WORK_LOG_DIR DASHBOARD_FILE REPORT_PATH
+export MAID_NAME DISPLAY_NAME ROLE REPORT_DATE CHAT_DB MAIL_ENVELOPE_INDEX CALENDAR_CACHE M017_LOG_DIR WORK_LOG_DIR DASHBOARD_FILE REPORT_PATH
 
 # Python 3.10+ required for PEP 604 union type syntax (X | None)
 # Try candidate interpreters in order; fall back to system python3 only if it qualifies.
@@ -117,12 +121,24 @@ display_name = os.environ["DISPLAY_NAME"]
 role = os.environ["ROLE"]
 report_date = os.environ["REPORT_DATE"]
 chat_db = Path(os.environ["CHAT_DB"]).expanduser()
+mail_envelope_index = Path(os.environ["MAIL_ENVELOPE_INDEX"]).expanduser()
+calendar_cache = Path(os.environ["CALENDAR_CACHE"]).expanduser()
 m017_log_dir = Path(os.environ["M017_LOG_DIR"]).expanduser()
 work_log_dir = Path(os.environ["WORK_LOG_DIR"]).expanduser()
 dashboard_file = Path(os.environ["DASHBOARD_FILE"]).expanduser()
 report_path = Path(os.environ["REPORT_PATH"]).expanduser()
 
 correction_keywords = ("糾正", "不對", "你說錯", "漏掉")
+mail_correction_keywords = ("不是廣告", "漏掉重要信", "重要信件漏掉", "不是垃圾信")
+dish_missed_keywords = ("Dorothy那邊還沒回", "Step 6漏了", "沒有回報Dorothy", "漏報")
+calendar_keywords = ("行事曆", "會議", "面試", "約", "排程")
+canned_phrases = (
+    "會處理後回主人",
+    "會核對發言者與內容後回報主人",
+    "明白了主人～女僕記住了",
+    "（這條是 @ 別人的，我安靜）",
+    "正在處理，完成後回您",
+)
 
 
 def day_bounds_messages_epoch(day: str) -> tuple[int, int]:
@@ -133,6 +149,65 @@ def day_bounds_messages_epoch(day: str) -> tuple[int, int]:
     start_ns = int((start.astimezone(dt.timezone.utc) - apple_epoch).total_seconds() * 1_000_000_000)
     end_ns = int((end.astimezone(dt.timezone.utc) - apple_epoch).total_seconds() * 1_000_000_000)
     return start_ns, end_ns
+
+
+def day_bounds_unix_epoch(day: str) -> tuple[int, int]:
+    """Return Unix timestamps for local Taiwan day bounds."""
+    start = dt.datetime.fromisoformat(day).replace(tzinfo=TZ)
+    end = start + dt.timedelta(days=1)
+    return int(start.timestamp()), int(end.timestamp())
+
+
+def day_bounds_cocoa_epoch(day: str) -> tuple[float, float]:
+    """Return Calendar/CoreData timestamps since 2001-01-01 UTC."""
+    start = dt.datetime.fromisoformat(day).replace(tzinfo=TZ)
+    end = start + dt.timedelta(days=1)
+    cocoa_epoch = dt.datetime(2001, 1, 1, tzinfo=dt.timezone.utc)
+    return (
+        (start.astimezone(dt.timezone.utc) - cocoa_epoch).total_seconds(),
+        (end.astimezone(dt.timezone.utc) - cocoa_epoch).total_seconds(),
+    )
+
+
+def evidence(source: str, path: Path, metric: str, count: int, confidence: str, notes: str) -> dict:
+    return {
+        "source": source,
+        "path": str(path),
+        "metric": metric,
+        "count": int(count),
+        "confidence": confidence,
+        "notes": notes,
+    }
+
+
+def fetch_chat_rows(day: str, *, chat_identifier: str | None = None, is_from_me: int | None = None) -> list[sqlite3.Row]:
+    if not chat_db.exists():
+        raise FileNotFoundError(f"{chat_db} missing")
+    start_ns, end_ns = day_bounds_messages_epoch(day)
+    conn = sqlite3.connect(f"file:{chat_db}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    params: list[object] = [start_ns, end_ns]
+    joins = ""
+    filters = ["message.date >= ?", "message.date < ?", "message.text IS NOT NULL"]
+    if chat_identifier is not None:
+        joins = "JOIN chat_message_join cmj ON cmj.message_id = message.ROWID JOIN chat ON chat.ROWID = cmj.chat_id"
+        filters.append("chat.chat_identifier = ?")
+        params.append(chat_identifier)
+    if is_from_me is not None:
+        filters.append("message.is_from_me = ?")
+        params.append(is_from_me)
+    rows = conn.execute(
+        f"""
+        SELECT message.ROWID AS rowid, message.date, message.is_from_me, message.text
+        FROM message
+        {joins}
+        WHERE {' AND '.join(filters)}
+        ORDER BY message.date ASC
+        """,
+        params,
+    ).fetchall()
+    conn.close()
+    return rows
 
 
 def percentile(values: list[float], pct: float) -> float | None:
@@ -401,6 +476,264 @@ def scan_work_logs() -> tuple[str, list[dict]]:
     }]
 
 
+def scan_mail_watchman() -> tuple[str, dict, list[dict]]:
+    """Measure local Mail classification signals from Envelope Index plus master corrections."""
+    kpi = {
+        "classification_accuracy_rate": None,
+        "ad_false_positive_rate": None,
+        "high_priority_miss_rate": None,
+        "reviewed_total": 0,
+        "errors": 0,
+    }
+    ev: list[dict] = []
+    correction_counts = {"ad_false_positive": 0, "high_priority_miss": 0}
+
+    try:
+        rows = fetch_chat_rows(report_date)
+        for row in rows:
+            text = row["text"] or ""
+            if any(keyword in text for keyword in ("不是廣告", "不是垃圾信")):
+                correction_counts["ad_false_positive"] += 1
+            if any(keyword in text for keyword in ("漏掉重要信", "重要信件漏掉")):
+                correction_counts["high_priority_miss"] += 1
+    except Exception as exc:
+        ev.append(evidence("chat_db", chat_db, "mail_watchman.corrections", 0, "low", f"correction scan unavailable: {exc}"))
+
+    if not mail_envelope_index.exists():
+        kpi["errors"] = 1
+        ev.append(evidence("mail_envelope_index", mail_envelope_index, "mail_watchman.reviewed_total", 0, "low", "Envelope Index missing"))
+        return "unavailable", kpi, ev
+
+    try:
+        start_epoch, end_epoch = day_bounds_unix_epoch(report_date)
+        conn = sqlite3.connect(f"file:{mail_envelope_index}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if "messages" not in tables:
+            raise RuntimeError("messages table not found")
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+        if "date_received" not in columns:
+            raise RuntimeError("messages.date_received column not found")
+
+        reviewed_total = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE date_received >= ? AND date_received < ?",
+            (start_epoch, end_epoch),
+        ).fetchone()[0]
+
+        text_columns = [col for col in ("subject", "sender", "snippet", "summary", "to_recipients") if col in columns]
+        high_priority_count = 0
+        if text_columns:
+            high_terms = ("重要", "urgent", "deadline", "付款", "payment", "會議", "面試", "法律", "醫療")
+            where_text = " OR ".join(f"LOWER(COALESCE({col}, '')) LIKE ?" for col in text_columns for _ in high_terms)
+            params = [f"%{term.lower()}%" for _col in text_columns for term in high_terms]
+            high_priority_count = conn.execute(
+                f"SELECT COUNT(*) FROM messages WHERE date_received >= ? AND date_received < ? AND ({where_text})",
+                (start_epoch, end_epoch, *params),
+            ).fetchone()[0]
+
+        ad_count = 0
+        ad_notes = "ad mailbox count unavailable from inspected schema"
+        if "mailbox" in columns:
+            ad_count = conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE date_received >= ? AND date_received < ? AND mailbox LIKE ?",
+                (start_epoch, end_epoch, "%廣告%"),
+            ).fetchone()[0]
+            ad_notes = "messages.mailbox LIKE 廣告"
+        elif "mailbox_id" in columns and "mailboxes" in tables:
+            mailbox_cols = {row["name"] for row in conn.execute("PRAGMA table_info(mailboxes)").fetchall()}
+            label_cols = [col for col in ("name", "display_name", "url") if col in mailbox_cols]
+            if label_cols:
+                label_expr = " || ' ' || ".join(f"COALESCE(mailboxes.{col}, '')" for col in label_cols)
+                ad_count = conn.execute(
+                    f"""
+                    SELECT COUNT(*)
+                    FROM messages
+                    JOIN mailboxes ON mailboxes.ROWID = messages.mailbox_id
+                    WHERE messages.date_received >= ? AND messages.date_received < ?
+                      AND ({label_expr}) LIKE ?
+                    """,
+                    (start_epoch, end_epoch, "%廣告%"),
+                ).fetchone()[0]
+                ad_notes = "messages.mailbox_id joined to mailboxes label LIKE 廣告"
+        conn.close()
+
+        ad_false_positive = correction_counts["ad_false_positive"]
+        high_priority_miss = correction_counts["high_priority_miss"]
+        total_classified = ad_count
+        kpi.update({
+            "classification_accuracy_rate": rate(max(total_classified - ad_false_positive - high_priority_miss, 0), total_classified),
+            "ad_false_positive_rate": rate(ad_false_positive, ad_count),
+            "high_priority_miss_rate": rate(high_priority_miss, high_priority_count),
+            "reviewed_total": int(reviewed_total),
+            "errors": 0,
+        })
+        ev.extend([
+            evidence("mail_envelope_index", mail_envelope_index, "mail_watchman.reviewed_total", reviewed_total, "medium", "date_received uses Unix epoch on macOS 26"),
+            evidence("mail_envelope_index", mail_envelope_index, "mail_watchman.ad_classified_count", ad_count, "low" if ad_count == 0 else "medium", ad_notes),
+            evidence("chat_db", chat_db, "mail_watchman.master_corrections", ad_false_positive + high_priority_miss, "medium", "keywords: " + ",".join(mail_correction_keywords)),
+        ])
+        return "ok" if ad_notes != "ad mailbox count unavailable from inspected schema" else "partial", kpi, ev
+    except Exception as exc:
+        kpi["errors"] = 1
+        ev.append(evidence("mail_envelope_index", mail_envelope_index, "mail_watchman.errors", 1, "low", f"sqlite3 read error: {exc}"))
+        return "unavailable", kpi, ev
+
+
+def scan_dish_counting() -> tuple[str, dict, list[dict]]:
+    """Measure Dorothy dish-counting messages against Step 6 work-log completion notes."""
+    dorothy_chat_id = "any;+;1773255c981f4bcfb75e418b72987ff5"
+    kpi = {"report_accuracy_rate": None, "step6_missed_count": 0, "reviewed_total": 0}
+    ev: list[dict] = []
+    status_parts: list[str] = []
+
+    try:
+        dorothy_rows = fetch_chat_rows(report_date, chat_identifier=dorothy_chat_id)
+        dish_count = sum(1 for row in dorothy_rows if "盤子" in (row["text"] or ""))
+        missed_count = 0
+        all_rows = fetch_chat_rows(report_date)
+        for row in all_rows:
+            text = row["text"] or ""
+            if any(keyword in text for keyword in dish_missed_keywords):
+                missed_count += 1
+        kpi["reviewed_total"] = dish_count
+        kpi["step6_missed_count"] = missed_count
+        ev.append(evidence("chat_db", chat_db, "dish_counting.dorothy_plate_messages", dish_count, "medium", f"Dorothy chat_identifier={dorothy_chat_id}; keyword=盤子"))
+        ev.append(evidence("chat_db", chat_db, "dish_counting.step6_missed_count", missed_count, "medium", "keywords: " + ",".join(dish_missed_keywords)))
+        status_parts.append("ok")
+    except Exception as exc:
+        ev.append(evidence("chat_db", chat_db, "dish_counting.dorothy_plate_messages", 0, "low", f"chat scan unavailable: {exc}"))
+        status_parts.append("unavailable")
+
+    try:
+        step6_reports = 0
+        if not work_log_dir.exists():
+            raise FileNotFoundError(f"{work_log_dir} missing")
+        pattern = re.compile(r"(Step\s*6|第\s*6\s*步).{0,80}(完成|complete|completed|回報|Dorothy)", re.IGNORECASE)
+        for path in work_log_dir.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            if report_date in text:
+                step6_reports += len(pattern.findall(text))
+        kpi["report_accuracy_rate"] = rate(step6_reports, kpi["reviewed_total"])
+        ev.append(evidence("work_logs", work_log_dir, "dish_counting.step6_complete_reports", step6_reports, "medium", "grep Step 6 completion mentions in WorkRecord"))
+        status_parts.append("ok")
+    except Exception as exc:
+        ev.append(evidence("work_logs", work_log_dir, "dish_counting.step6_complete_reports", 0, "low", f"work log scan unavailable: {exc}"))
+        status_parts.append("unavailable")
+
+    return ("ok" if all(part == "ok" for part in status_parts) else "partial" if any(part == "ok" for part in status_parts) else "unavailable"), kpi, ev
+
+
+def scan_calendar() -> tuple[str, dict, list[dict]]:
+    """Measure Calendar event creation against chat messages with date/time intent."""
+    kpi = {
+        "event_entry_success_rate": None,
+        "timezone_accuracy_rate": None,
+        "expected_event_count": 0,
+        "created_event_count": 0,
+    }
+    ev: list[dict] = []
+    statuses: list[str] = []
+
+    try:
+        rows = fetch_chat_rows(report_date)
+        date_time_pattern = re.compile(r"(\d{1,2}[/-]\d{1,2}|\d{4}[/-]\d{1,2}[/-]\d{1,2}|今天|明天|後天|週[一二三四五六日天]|星期[一二三四五六日天]).{0,30}(\d{1,2}:\d{2}|\d{1,2}\s*[點时時])")
+        expected = sum(
+            1 for row in rows
+            if any(keyword in (row["text"] or "") for keyword in calendar_keywords)
+            and date_time_pattern.search(row["text"] or "")
+        )
+        kpi["expected_event_count"] = expected
+        ev.append(evidence("chat_db", chat_db, "calendar.expected_event_count", expected, "low", "keywords with date/time pattern"))
+        statuses.append("ok")
+    except Exception as exc:
+        ev.append(evidence("chat_db", chat_db, "calendar.expected_event_count", 0, "low", f"chat scan unavailable: {exc}"))
+        statuses.append("unavailable")
+
+    if not calendar_cache.exists():
+        ev.append(evidence("calendar_cache", calendar_cache, "calendar.created_event_count", 0, "low", "Calendar Cache missing"))
+        statuses.append("unavailable")
+    else:
+        try:
+            start_cocoa, end_cocoa = day_bounds_cocoa_epoch(report_date)
+            conn = sqlite3.connect(f"file:{calendar_cache}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            if "ZEVENT" not in tables:
+                raise RuntimeError("ZEVENT table not found")
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(ZEVENT)").fetchall()}
+            created_col = next((col for col in ("ZCREATIONDATE", "ZCREATEDDATE", "ZDATECREATED") if col in columns), None)
+            if created_col is None:
+                raise RuntimeError("ZEVENT creation-date column not found")
+            created_rows = conn.execute(
+                f"SELECT * FROM ZEVENT WHERE {created_col} >= ? AND {created_col} < ?",
+                (start_cocoa, end_cocoa),
+            ).fetchall()
+            timezone_cols = [col for col in ("ZTIMEZONE", "ZTIMEZONEID", "ZSTARTTIMEZONE", "ZENDTIMEZONE") if col in columns]
+            tz_ok = 0
+            for row in created_rows:
+                values = " ".join(str(row[col] or "") for col in timezone_cols)
+                if "Asia/Taipei" in values or "UTC+8" in values or "GMT+8" in values:
+                    tz_ok += 1
+            created = len(created_rows)
+            kpi["created_event_count"] = created
+            kpi["event_entry_success_rate"] = rate(created, kpi["expected_event_count"])
+            kpi["timezone_accuracy_rate"] = rate(tz_ok, created)
+            ev.append(evidence("calendar_cache", calendar_cache, "calendar.created_event_count", created, "medium", f"ZEVENT.{created_col} created today"))
+            ev.append(evidence("calendar_cache", calendar_cache, "calendar.timezone_accuracy", tz_ok, "low", "timezone columns: " + ",".join(timezone_cols) if timezone_cols else "no timezone columns found"))
+            statuses.append("ok")
+            conn.close()
+        except Exception as exc:
+            ev.append(evidence("calendar_cache", calendar_cache, "calendar.created_event_count", 0, "low", f"sqlite3 read error: {exc}"))
+            statuses.append("unavailable")
+
+    return ("ok" if all(part == "ok" for part in statuses) else "partial" if any(part == "ok" for part in statuses) else "unavailable"), kpi, ev
+
+
+def scan_rule_compliance() -> tuple[str, dict, list[dict]]:
+    """Measure outbound canned responses and no-@ reply heuristic from chat.db."""
+    kpi = {
+        "compliance_rate": None,
+        "no_at_no_reply_violation_count": 0,
+        "canned_response_violation_count": 0,
+    }
+    ev: list[dict] = []
+    try:
+        rows = fetch_chat_rows(report_date)
+        outbound = [row for row in rows if int(row["is_from_me"] or 0) == 1]
+        no_at_violations = 0
+        canned_violations = 0
+        previous_text = ""
+        for row in rows:
+            text = row["text"] or ""
+            if int(row["is_from_me"] or 0) == 1:
+                if "@" not in previous_text and previous_text.strip():
+                    no_at_violations += 1
+                if any(phrase in text for phrase in canned_phrases):
+                    canned_violations += 1
+                if "姊姊" in text and len(text.strip()) < 30:
+                    canned_violations += 1
+            previous_text = text
+        total_interactions = len(outbound)
+        violation_count = no_at_violations + canned_violations
+        kpi.update({
+            "compliance_rate": rate(max(total_interactions - violation_count, 0), total_interactions),
+            "no_at_no_reply_violation_count": no_at_violations,
+            "canned_response_violation_count": canned_violations,
+        })
+        ev.append(evidence("chat_db", chat_db, "rule_compliance.total_outbound_interactions", total_interactions, "low", "outbound messages from Alpha/is_from_me=1"))
+        ev.append(evidence("chat_db", chat_db, "rule_compliance.no_at_no_reply_violation_count", no_at_violations, "low", "heuristic: prior inbound text lacks @ mention"))
+        ev.append(evidence("chat_db", chat_db, "rule_compliance.canned_response_violation_count", canned_violations, "medium", "banned canned phrases plus short 姊姊 messages"))
+        return "ok", kpi, ev
+    except Exception as exc:
+        ev.append(evidence("chat_db", chat_db, "rule_compliance", 0, "low", f"chat scan unavailable: {exc}"))
+        return "unavailable", kpi, ev
+
+
 def rate(success: int, total: int) -> float | None:
     return round(success / total, 4) if total > 0 else None
 
@@ -409,6 +742,10 @@ chat_status, correction_count, median_reply, p95_reply, chat_evidence = scan_cha
 m017_status, m017_attempts, m017_successes, tg_attempts, tg_successes, m017_evidence = scan_m017_logs()
 dashboard_status, expected_signins, actual_signins, dashboard_evidence = scan_dashboard()
 work_status, work_evidence = scan_work_logs()
+mail_status, mail_kpi, mail_evidence = scan_mail_watchman()
+dish_status, dish_kpi, dish_evidence = scan_dish_counting()
+calendar_status, calendar_kpi, calendar_evidence = scan_calendar()
+rule_status, rule_kpi, rule_evidence = scan_rule_compliance()
 
 violations = []
 corrective_actions = []
@@ -465,7 +802,7 @@ success_rates = [
 overall_success = round(sum(success_rates) / len(success_rates), 4) if success_rates else None
 
 report = {
-    "schema_version": "0.1",
+    "schema_version": "0.2",
     "report_date": report_date,
     "timezone": "Asia/Taipei",
     "maid": {
@@ -479,15 +816,13 @@ report = {
         "m017_logs": m017_status,
         "work_logs": work_status,
         "dashboard": dashboard_status,
+        "mail_watchman": mail_status,
+        "dish_counting": dish_status,
+        "calendar": calendar_status,
+        "rule_compliance": rule_status,
     },
     "kpis": {
-        "mail_watchman": {
-            "classification_accuracy_rate": None,
-            "ad_false_positive_rate": None,
-            "high_priority_miss_rate": None,
-            "reviewed_total": 0,
-            "errors": 0,
-        },
+        "mail_watchman": mail_kpi,
         "m017_nightly_merge": {
             "completeness": None,
             "commit_success_rate": rate(m017_successes, m017_attempts),
@@ -495,11 +830,7 @@ report = {
             "attempt_count": m017_attempts,
             "success_count": m017_successes,
         },
-        "dish_counting": {
-            "report_accuracy_rate": None,
-            "step6_missed_count": 0,
-            "reviewed_total": 0,
-        },
+        "dish_counting": dish_kpi,
         "dashboard": {
             "sign_in_rate": rate(actual_signins, expected_signins),
             "expected_sign_ins": expected_signins,
@@ -515,29 +846,20 @@ report = {
             "rule_coverage_rate": None,
             "regression_error_count": 0,
         },
-        "calendar": {
-            "event_entry_success_rate": None,
-            "timezone_accuracy_rate": None,
-            "expected_event_count": 0,
-            "created_event_count": 0,
-        },
-        "rule_compliance": {
-            "compliance_rate": None,
-            "no_at_no_reply_violation_count": 0,
-            "canned_response_violation_count": 0,
-        },
+        "calendar": calendar_kpi,
+        "rule_compliance": rule_kpi,
     },
     "dimensions": {
         "success_completion_rate": overall_success,
         "response_time_median_minutes": round(median_reply, 2) if median_reply is not None else None,
         "response_time_p95_minutes": round(p95_reply, 2) if p95_reply is not None else None,
-        "error_misclassification_count": 0,
+        "error_misclassification_count": mail_kpi["errors"],
         "master_correction_count": correction_count,
-        "rule_compliance_rate": None,
+        "rule_compliance_rate": rule_kpi["compliance_rate"],
     },
     "violations": violations,
     "corrective_actions": corrective_actions,
-    "evidence": chat_evidence + m017_evidence + dashboard_evidence + work_evidence,
+    "evidence": chat_evidence + m017_evidence + dashboard_evidence + work_evidence + mail_evidence + dish_evidence + calendar_evidence + rule_evidence,
 }
 
 report_path.parent.mkdir(parents=True, exist_ok=True)

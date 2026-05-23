@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.alpha.pleiades.m018-kpi-aggregator</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/Alpha/Library/CloudStorage/Dropbox/PleiadesMaids/Scripts/m018-kpi-aggregator.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/Alpha/Library/CloudStorage/Dropbox/PleiadesMaids</string>
+
+    <!--
+        Run every Sunday at 09:00 Taiwan time (UTC+8) = 01:00 UTC.
+        macOS launchd StartCalendarInterval uses local time, so set Hour=9.
+        Weekday: 0 = Sunday in launchd (Apple docs).
+    -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>0</integer>
+        <key>Hour</key>
+        <integer>9</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/Alpha/Library/Logs/PleiadesMaids/m018-kpi-aggregator.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/Alpha/Library/Logs/PleiadesMaids/m018-kpi-aggregator.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/Alpha</string>
+    </dict>
+</dict>
+</plist>

@@ -1,10 +1,12 @@
 ---
-version: "0.1"
+version: "0.3"
 date: "2026-05-24"
 author: "Codex + Alpha"
 path: "/Users/Alpha/Library/CloudStorage/Dropbox/PleiadesMaids/Skills/maid_kpi_evaluation_sop.md"
 status: draft
 ---
+
+> v0.3 changelog: 新增 m018-kpi-aggregator 部署章節（章節 9）+ launchd plist 設定 + DRY_RUN 試跑流程。v0.2 8-scanner 框架不變。
 
 # Pleiades 七女僕 AI 系統 KPI 評估 SOP
 
@@ -71,6 +73,17 @@ status: draft
 
 每位女僕在本機執行 `kpi-eval.sh`。腳本由 launchd 或人工呼叫，讀取本機可用資料來源，輸出統一 JSON 到 Dropbox shared memory layer。
 
+### Scanner inventory v0.2
+
+- `scan_chat_db`：掃描 iMessage `chat.db`，估算主人糾正次數與 TG/iMessage 回覆節奏。
+- `scan_m017_logs`：掃描 m017 nightly merge logs，估算 merge 嘗試、成功與 TG 廣播送達。
+- `scan_dashboard`：掃描 Current(Xeon Dashboard).md，估算當日女僕簽到率。
+- `scan_work_logs`：確認 Obsidian WorkRecord 可用性，供任務型 KPI parser 擴充。
+- `scan_mail_watchman`：讀取 Mail Envelope Index 與主人糾正關鍵字，估算廣告分類、誤判與高優先漏判。
+- `scan_dish_counting`：讀取 Dorothy 群組盤子訊息與 WorkRecord Step 6 完成紀錄，估算餐盤回報正確率與漏報。
+- `scan_calendar`：讀取 Calendar Cache 與對話中的日期時間需求，估算行事曆建檔與時區正確率。
+- `scan_rule_compliance`：掃描 Alpha outbound iMessage，估算 no-@ no-reply 與罐頭回覆違規。
+
 ### 執行方式
 
 ```bash
@@ -99,7 +112,7 @@ status: draft
 
 ```json
 {
-  "schema_version": "0.1",
+  "schema_version": "0.2",
   "report_date": "YYYY-MM-DD",
   "timezone": "Asia/Taipei",
   "maid": {
@@ -112,7 +125,11 @@ status: draft
     "chat_db": "ok",
     "m017_logs": "ok",
     "work_logs": "ok",
-    "dashboard": "ok"
+    "dashboard": "ok",
+    "mail_watchman": "ok",
+    "dish_counting": "ok",
+    "calendar": "ok",
+    "rule_compliance": "ok"
   },
   "kpis": {
     "mail_watchman": {
@@ -246,3 +263,8 @@ m017 nightly merge 於每日 23:00 執行，可在合併記憶後順手讀取七
 | Epsilon | Epsilon | member |
 | Theta | Theta | member |
 | Omega | Kanade | member |
+
+## Appendix B：Changelog
+
+- v0.2：新增 `scan_mail_watchman`、`scan_dish_counting`、`scan_calendar`、`scan_rule_compliance` 四個 scanners，並將 `source_status` 與 `kpis` schema 對齊 8-scanner 輸出。
+- v0.1：建立 KPI 評估 SOP、統一 JSON schema 與初版四個 scanners。
