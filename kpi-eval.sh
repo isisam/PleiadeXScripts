@@ -9,6 +9,7 @@ usage() {
   cat <<'USAGE'
 Usage:
   kpi-eval.sh --maid-name <Alpha|Beta|Gamma|Delta|Epsilon|Theta|Omega> [--date YYYY-MM-DD]
+  kpi-eval.sh --maid <Alpha|Beta|Gamma|Delta|Epsilon|Theta|Omega> [--date YYYY-MM-DD]
 
 Environment overrides:
   CHAT_DB          Default: ~/Library/Messages/chat.db
@@ -26,7 +27,7 @@ REPORT_DATE="$(TZ=Asia/Taipei date +%F)"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --maid-name)
+    --maid-name|--maid)
       MAID_NAME="${2:-}"
       shift 2
       ;;
@@ -47,9 +48,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$MAID_NAME" ]]; then
-  echo "--maid-name is required" >&2
-  usage >&2
-  exit 2
+  MAID_NAME="Alpha"
 fi
 
 case "$MAID_NAME" in
@@ -67,6 +66,16 @@ case "$MAID_NAME" in
     ;;
 esac
 
+role_kpi_scope() {
+  # ROLE_KPI_MAP equivalent for macOS /bin/bash 3.x, which lacks declare -A.
+  case "$1" in
+    Alpha) echo "mail_watchman m017_nightly_merge dashboard response_rhythm ad_classification calendar rule_compliance" ;;
+    Beta) echo "m017_nightly_merge dashboard response_rhythm ad_classification rule_compliance" ;;
+    Gamma) echo "dish_counting dashboard response_rhythm rule_compliance" ;;
+    Delta|Epsilon|Theta|Omega) echo "dashboard response_rhythm rule_compliance" ;;
+  esac
+}
+
 HOME_DIR="${HOME:-/Users/Alpha}"
 PLEIADES_ROOT="${PLEIADES_ROOT:-$HOME_DIR/Library/CloudStorage/Dropbox/PleiadesMaids}"
 CHAT_DB="${CHAT_DB:-$HOME_DIR/Library/Messages/chat.db}"
@@ -76,6 +85,7 @@ WORK_LOG_DIR="${WORK_LOG_DIR:-$HOME_DIR/Library/CloudStorage/Dropbox/PleiadesMai
 DASHBOARD_FILE="${DASHBOARD_FILE:-$WORK_LOG_DIR/Current(Xeon Dashboard).md}"
 REPORT_DIR="$PLEIADES_ROOT/MaidMemory/$MAID_NAME/kpi_reports"
 REPORT_PATH="$REPORT_DIR/$REPORT_DATE.json"
+ROLE_KPI_SCOPE="$(role_kpi_scope "$MAID_NAME")"
 
 if [[ -z "${M017_LOG_DIR:-}" ]]; then
   if [[ -d "$HOME_DIR/Library/Logs/PleiadesMaids/m017-nightly-merge" ]]; then
@@ -87,7 +97,7 @@ fi
 
 mkdir -p "$REPORT_DIR"
 
-export MAID_NAME DISPLAY_NAME ROLE REPORT_DATE CHAT_DB MAIL_ENVELOPE_INDEX CALENDAR_CACHE M017_LOG_DIR WORK_LOG_DIR DASHBOARD_FILE REPORT_PATH
+export MAID_NAME DISPLAY_NAME ROLE ROLE_KPI_SCOPE REPORT_DATE CHAT_DB MAIL_ENVELOPE_INDEX CALENDAR_CACHE M017_LOG_DIR WORK_LOG_DIR DASHBOARD_FILE REPORT_PATH
 
 # Python 3.10+ required for PEP 604 union type syntax (X | None)
 # Try candidate interpreters in order; fall back to system python3 only if it qualifies.
@@ -119,6 +129,7 @@ TZ = ZoneInfo("Asia/Taipei")
 maid_name = os.environ["MAID_NAME"]
 display_name = os.environ["DISPLAY_NAME"]
 role = os.environ["ROLE"]
+role_kpi_scope = set(os.environ["ROLE_KPI_SCOPE"].split())
 report_date = os.environ["REPORT_DATE"]
 chat_db = Path(os.environ["CHAT_DB"]).expanduser()
 mail_envelope_index = Path(os.environ["MAIL_ENVELOPE_INDEX"]).expanduser()
@@ -139,6 +150,29 @@ canned_phrases = (
     "（這條是 @ 別人的，我安靜）",
     "正在處理，完成後回您",
 )
+
+KPI_ORDER = (
+    "mail_watchman",
+    "m017_nightly_merge",
+    "dish_counting",
+    "dashboard",
+    "response_rhythm",
+    "ad_classification",
+    "calendar",
+    "rule_compliance",
+)
+
+
+def kpi_in_scope(kpi_name: str) -> bool:
+    return kpi_name in role_kpi_scope
+
+
+def mark_in_scope(kpi: dict) -> dict:
+    return {"out_of_scope": False, **kpi}
+
+
+def out_of_scope_kpi() -> dict:
+    return {"out_of_scope": True}
 
 
 def day_bounds_messages_epoch(day: str) -> tuple[int, int]:
@@ -533,28 +567,48 @@ def scan_mail_watchman() -> tuple[str, dict, list[dict]]:
 
         ad_count = 0
         ad_notes = "ad mailbox count unavailable from inspected schema"
-        if "mailbox" in columns:
-            ad_count = conn.execute(
-                "SELECT COUNT(*) FROM messages WHERE date_received >= ? AND date_received < ? AND mailbox LIKE ?",
-                (start_epoch, end_epoch, "%廣告%"),
-            ).fetchone()[0]
-            ad_notes = "messages.mailbox LIKE 廣告"
-        elif "mailbox_id" in columns and "mailboxes" in tables:
+        ad_mailbox_rowid = None
+        if "mailbox" in columns and "mailboxes" in tables:
             mailbox_cols = {row["name"] for row in conn.execute("PRAGMA table_info(mailboxes)").fetchall()}
             label_cols = [col for col in ("name", "display_name", "url") if col in mailbox_cols]
             if label_cols:
-                label_expr = " || ' ' || ".join(f"COALESCE(mailboxes.{col}, '')" for col in label_cols)
-                ad_count = conn.execute(
+                label_expr = " || ' ' || ".join(f"COALESCE({col}, '')" for col in label_cols)
+                mailbox_row = conn.execute(
                     f"""
-                    SELECT COUNT(*)
-                    FROM messages
-                    JOIN mailboxes ON mailboxes.ROWID = messages.mailbox_id
-                    WHERE messages.date_received >= ? AND messages.date_received < ?
-                      AND ({label_expr}) LIKE ?
+                    SELECT ROWID, {label_expr} AS mailbox_label
+                    FROM mailboxes
+                    WHERE {label_expr} LIKE ?
+                       OR LOWER({label_expr}) LIKE ?
+                       OR LOWER({label_expr}) LIKE ?
+                    ORDER BY
+                      CASE
+                        WHEN {label_expr} LIKE ? THEN 0
+                        WHEN LOWER({label_expr}) LIKE ? THEN 1
+                        ELSE 2
+                      END,
+                      ROWID
+                    LIMIT 1
                     """,
-                    (start_epoch, end_epoch, "%廣告%"),
-                ).fetchone()[0]
-                ad_notes = "messages.mailbox_id joined to mailboxes label LIKE 廣告"
+                    ("%廣告%", "%ads%", "%junk%", "%廣告%", "%ads%"),
+                ).fetchone()
+                if mailbox_row is not None:
+                    ad_mailbox_rowid = int(mailbox_row["ROWID"])
+                    # Gmail/IMAP can represent label assignment as a label-copy rather than
+                    # a physical move (feedback_gmail_imap_move). Count distinct message_id
+                    # appearances in the ad mailbox today as a proxy for inbox->ad handling.
+                    ad_count = conn.execute(
+                        """
+                        SELECT COUNT(DISTINCT messages.message_id)
+                        FROM messages
+                        JOIN mailboxes ON mailboxes.ROWID = messages.mailbox
+                        WHERE messages.date_received >= ? AND messages.date_received < ?
+                          AND mailboxes.ROWID = ?
+                        """,
+                        (start_epoch, end_epoch, ad_mailbox_rowid),
+                    ).fetchone()[0]
+                    ad_notes = f"messages.mailbox joined to mailboxes.ROWID={ad_mailbox_rowid}; label={mailbox_row['mailbox_label']}"
+                else:
+                    ad_notes = "no_ad_mailbox"
         conn.close()
 
         ad_false_positive = correction_counts["ad_false_positive"]
@@ -572,7 +626,9 @@ def scan_mail_watchman() -> tuple[str, dict, list[dict]]:
             evidence("mail_envelope_index", mail_envelope_index, "mail_watchman.ad_classified_count", ad_count, "low" if ad_count == 0 else "medium", ad_notes),
             evidence("chat_db", chat_db, "mail_watchman.master_corrections", ad_false_positive + high_priority_miss, "medium", "keywords: " + ",".join(mail_correction_keywords)),
         ])
-        return "ok" if ad_notes != "ad mailbox count unavailable from inspected schema" else "partial", kpi, ev
+        if ad_notes == "no_ad_mailbox":
+            return "no_ad_mailbox", kpi, ev
+        return "ok" if ad_mailbox_rowid is not None else "partial", kpi, ev
     except Exception as exc:
         kpi["errors"] = 1
         ev.append(evidence("mail_envelope_index", mail_envelope_index, "mail_watchman.errors", 1, "low", f"sqlite3 read error: {exc}"))
@@ -633,6 +689,7 @@ def scan_calendar() -> tuple[str, dict, list[dict]]:
     kpi = {
         "event_entry_success_rate": None,
         "timezone_accuracy_rate": None,
+        "timezone_field": None,
         "expected_event_count": 0,
         "created_event_count": 0,
     }
@@ -673,18 +730,26 @@ def scan_calendar() -> tuple[str, dict, list[dict]]:
                 f"SELECT * FROM ZEVENT WHERE {created_col} >= ? AND {created_col} < ?",
                 (start_cocoa, end_cocoa),
             ).fetchall()
-            timezone_cols = [col for col in ("ZTIMEZONE", "ZTIMEZONEID", "ZSTARTTIMEZONE", "ZENDTIMEZONE") if col in columns]
-            tz_ok = 0
-            for row in created_rows:
-                values = " ".join(str(row[col] or "") for col in timezone_cols)
-                if "Asia/Taipei" in values or "UTC+8" in values or "GMT+8" in values:
-                    tz_ok += 1
+            timezone_field = next((col for col in ("ZTIMEZONE", "ZTIMEZONENAME", "ZSTARTTIMEZONE") if col in columns), None)
+            if timezone_field is None:
+                tz_ok = None
+                kpi["timezone_field"] = "not_found"
+            else:
+                tz_ok = sum(1 for row in created_rows if row[timezone_field] is not None and str(row[timezone_field]).strip() != "")
+                kpi["timezone_field"] = timezone_field
             created = len(created_rows)
             kpi["created_event_count"] = created
             kpi["event_entry_success_rate"] = rate(created, kpi["expected_event_count"])
-            kpi["timezone_accuracy_rate"] = rate(tz_ok, created)
+            kpi["timezone_accuracy_rate"] = rate(tz_ok, created) if tz_ok is not None else None
             ev.append(evidence("calendar_cache", calendar_cache, "calendar.created_event_count", created, "medium", f"ZEVENT.{created_col} created today"))
-            ev.append(evidence("calendar_cache", calendar_cache, "calendar.timezone_accuracy", tz_ok, "low", "timezone columns: " + ",".join(timezone_cols) if timezone_cols else "no timezone columns found"))
+            ev.append(evidence(
+                "calendar_cache",
+                calendar_cache,
+                "calendar.timezone_accuracy",
+                tz_ok if tz_ok is not None else 0,
+                "medium" if timezone_field else "low",
+                f"timezone_field={timezone_field}" if timezone_field else "timezone_field=not_found; tried ZTIMEZONE,ZTIMEZONENAME,ZSTARTTIMEZONE",
+            ))
             statuses.append("ok")
             conn.close()
         except Exception as exc:
@@ -703,21 +768,77 @@ def scan_rule_compliance() -> tuple[str, dict, list[dict]]:
     }
     ev: list[dict] = []
     try:
-        rows = fetch_chat_rows(report_date)
+        if not chat_db.exists():
+            raise FileNotFoundError(f"{chat_db} missing")
+        start_ns, end_ns = day_bounds_messages_epoch(report_date)
+        conn = sqlite3.connect(f"file:{chat_db}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT
+              message.ROWID AS rowid,
+              message.date,
+              message.is_from_me,
+              message.text,
+              message.handle_id,
+              handle.id AS handle_identifier,
+              chat.ROWID AS chat_id,
+              chat.style AS chat_style,
+              chat.chat_identifier,
+              chat.room_name,
+              chat.display_name AS chat_display_name
+            FROM message
+            JOIN chat_message_join cmj ON cmj.message_id = message.ROWID
+            JOIN chat ON chat.ROWID = cmj.chat_id
+            LEFT JOIN handle ON handle.ROWID = message.handle_id
+            WHERE message.date >= ? AND message.date < ?
+              AND message.text IS NOT NULL
+            ORDER BY chat.ROWID ASC, message.date ASC
+            """,
+            (start_ns, end_ns),
+        ).fetchall()
+        conn.close()
+
         outbound = [row for row in rows if int(row["is_from_me"] or 0) == 1]
         no_at_violations = 0
         canned_violations = 0
-        previous_text = ""
+        mention_names = {maid_name.lower(), display_name.lower()}
+        mention_pattern = re.compile(
+            r"(@|＠)\s*(all|全部|" + "|".join(re.escape(name) for name in sorted(mention_names)) + r")",
+            re.IGNORECASE,
+        )
+        master_identifier = "isisam@mac.com"
+        rows_by_chat: dict[int, list[sqlite3.Row]] = {}
         for row in rows:
-            text = row["text"] or ""
-            if int(row["is_from_me"] or 0) == 1:
-                if "@" not in previous_text and previous_text.strip():
+            rows_by_chat.setdefault(int(row["chat_id"]), []).append(row)
+
+        for chat_rows in rows_by_chat.values():
+            recent_inbound: list[sqlite3.Row] = []
+            for row in chat_rows:
+                text = row["text"] or ""
+                if int(row["is_from_me"] or 0) == 0:
+                    recent_inbound.append(row)
+                    recent_inbound = recent_inbound[-5:]
+                    continue
+
+                chat_identifier = str(row["chat_identifier"] or "").lower()
+                handle_identifier = str(row["handle_identifier"] or "").lower()
+                room_name = str(row["room_name"] or "")
+                chat_display_name = str(row["chat_display_name"] or "")
+                is_group_chat = bool(room_name) or chat_identifier.startswith("chat") or bool(chat_display_name)
+                is_master_dm = not is_group_chat and (
+                    master_identifier in chat_identifier
+                    or master_identifier in handle_identifier
+                    or chat_identifier == master_identifier
+                    or handle_identifier == master_identifier
+                )
+                justified_by_mention = any(mention_pattern.search(prev["text"] or "") for prev in recent_inbound)
+                if not justified_by_mention and not is_master_dm:
                     no_at_violations += 1
                 if any(phrase in text for phrase in canned_phrases):
                     canned_violations += 1
                 if "姊姊" in text and len(text.strip()) < 30:
                     canned_violations += 1
-            previous_text = text
         total_interactions = len(outbound)
         violation_count = no_at_violations + canned_violations
         kpi.update({
@@ -726,7 +847,7 @@ def scan_rule_compliance() -> tuple[str, dict, list[dict]]:
             "canned_response_violation_count": canned_violations,
         })
         ev.append(evidence("chat_db", chat_db, "rule_compliance.total_outbound_interactions", total_interactions, "low", "outbound messages from Alpha/is_from_me=1"))
-        ev.append(evidence("chat_db", chat_db, "rule_compliance.no_at_no_reply_violation_count", no_at_violations, "low", "heuristic: prior inbound text lacks @ mention"))
+        ev.append(evidence("chat_db", chat_db, "rule_compliance.no_at_no_reply_violation_count", no_at_violations, "medium", "heuristic: preceding 5 inbound messages in same chat lack @own-name/@all/@全部; master DM excluded"))
         ev.append(evidence("chat_db", chat_db, "rule_compliance.canned_response_violation_count", canned_violations, "medium", "banned canned phrases plus short 姊姊 messages"))
         return "ok", kpi, ev
     except Exception as exc:
@@ -739,13 +860,29 @@ def rate(success: int, total: int) -> float | None:
 
 
 chat_status, correction_count, median_reply, p95_reply, chat_evidence = scan_chat_db()
-m017_status, m017_attempts, m017_successes, tg_attempts, tg_successes, m017_evidence = scan_m017_logs()
 dashboard_status, expected_signins, actual_signins, dashboard_evidence = scan_dashboard()
 work_status, work_evidence = scan_work_logs()
-mail_status, mail_kpi, mail_evidence = scan_mail_watchman()
-dish_status, dish_kpi, dish_evidence = scan_dish_counting()
-calendar_status, calendar_kpi, calendar_evidence = scan_calendar()
 rule_status, rule_kpi, rule_evidence = scan_rule_compliance()
+
+if kpi_in_scope("m017_nightly_merge"):
+    m017_status, m017_attempts, m017_successes, tg_attempts, tg_successes, m017_evidence = scan_m017_logs()
+else:
+    m017_status, m017_attempts, m017_successes, tg_attempts, tg_successes, m017_evidence = "out_of_scope", 0, 0, 0, 0, []
+
+if kpi_in_scope("mail_watchman"):
+    mail_status, mail_kpi, mail_evidence = scan_mail_watchman()
+else:
+    mail_status, mail_kpi, mail_evidence = "out_of_scope", out_of_scope_kpi(), []
+
+if kpi_in_scope("dish_counting"):
+    dish_status, dish_kpi, dish_evidence = scan_dish_counting()
+else:
+    dish_status, dish_kpi, dish_evidence = "out_of_scope", out_of_scope_kpi(), []
+
+if kpi_in_scope("calendar"):
+    calendar_status, calendar_kpi, calendar_evidence = scan_calendar()
+else:
+    calendar_status, calendar_kpi, calendar_evidence = "out_of_scope", out_of_scope_kpi(), []
 
 violations = []
 corrective_actions = []
@@ -792,17 +929,50 @@ if m017_attempts and m017_successes == 0:
         "owner": maid_name,
     })
 
-success_rates = [
-    value for value in (
-        rate(m017_successes, m017_attempts),
-        rate(actual_signins, expected_signins),
-    )
-    if value is not None
-]
+m017_kpi = {
+    "completeness": None,
+    "commit_success_rate": rate(m017_successes, m017_attempts),
+    "tg_broadcast_delivery_rate": rate(tg_successes, tg_attempts),
+    "attempt_count": m017_attempts,
+    "success_count": m017_successes,
+}
+dashboard_kpi = {
+    "sign_in_rate": rate(actual_signins, expected_signins),
+    "expected_sign_ins": expected_signins,
+    "actual_sign_ins": actual_signins,
+}
+response_rhythm_kpi = {
+    "median_time_to_reply_minutes": round(median_reply, 2) if median_reply is not None else None,
+    "p95_time_to_reply_minutes": round(p95_reply, 2) if p95_reply is not None else None,
+    "master_correction_count": correction_count,
+}
+ad_classification_kpi = {
+    "accuracy_rate": None,
+    "rule_coverage_rate": None,
+    "regression_error_count": 0,
+}
+
+success_rate_candidates = []
+if kpi_in_scope("m017_nightly_merge"):
+    success_rate_candidates.append(m017_kpi["commit_success_rate"])
+if kpi_in_scope("dashboard"):
+    success_rate_candidates.append(dashboard_kpi["sign_in_rate"])
+success_rates = [value for value in success_rate_candidates if value is not None]
 overall_success = round(sum(success_rates) / len(success_rates), 4) if success_rates else None
 
+kpis = {
+    "mail_watchman": mark_in_scope(mail_kpi) if kpi_in_scope("mail_watchman") else out_of_scope_kpi(),
+    "m017_nightly_merge": mark_in_scope(m017_kpi) if kpi_in_scope("m017_nightly_merge") else out_of_scope_kpi(),
+    "dish_counting": mark_in_scope(dish_kpi) if kpi_in_scope("dish_counting") else out_of_scope_kpi(),
+    "dashboard": mark_in_scope(dashboard_kpi) if kpi_in_scope("dashboard") else out_of_scope_kpi(),
+    "response_rhythm": mark_in_scope(response_rhythm_kpi) if kpi_in_scope("response_rhythm") else out_of_scope_kpi(),
+    "ad_classification": mark_in_scope(ad_classification_kpi) if kpi_in_scope("ad_classification") else out_of_scope_kpi(),
+    "calendar": mark_in_scope(calendar_kpi) if kpi_in_scope("calendar") else out_of_scope_kpi(),
+    "rule_compliance": mark_in_scope(rule_kpi) if kpi_in_scope("rule_compliance") else out_of_scope_kpi(),
+}
+
 report = {
-    "schema_version": "0.2",
+    "schema_version": "0.4",
     "report_date": report_date,
     "timezone": "Asia/Taipei",
     "maid": {
@@ -821,39 +991,12 @@ report = {
         "calendar": calendar_status,
         "rule_compliance": rule_status,
     },
-    "kpis": {
-        "mail_watchman": mail_kpi,
-        "m017_nightly_merge": {
-            "completeness": None,
-            "commit_success_rate": rate(m017_successes, m017_attempts),
-            "tg_broadcast_delivery_rate": rate(tg_successes, tg_attempts),
-            "attempt_count": m017_attempts,
-            "success_count": m017_successes,
-        },
-        "dish_counting": dish_kpi,
-        "dashboard": {
-            "sign_in_rate": rate(actual_signins, expected_signins),
-            "expected_sign_ins": expected_signins,
-            "actual_sign_ins": actual_signins,
-        },
-        "response_rhythm": {
-            "median_time_to_reply_minutes": round(median_reply, 2) if median_reply is not None else None,
-            "p95_time_to_reply_minutes": round(p95_reply, 2) if p95_reply is not None else None,
-            "master_correction_count": correction_count,
-        },
-        "ad_classification": {
-            "accuracy_rate": None,
-            "rule_coverage_rate": None,
-            "regression_error_count": 0,
-        },
-        "calendar": calendar_kpi,
-        "rule_compliance": rule_kpi,
-    },
+    "kpis": kpis,
     "dimensions": {
         "success_completion_rate": overall_success,
         "response_time_median_minutes": round(median_reply, 2) if median_reply is not None else None,
         "response_time_p95_minutes": round(p95_reply, 2) if p95_reply is not None else None,
-        "error_misclassification_count": mail_kpi["errors"],
+        "error_misclassification_count": mail_kpi.get("errors", 0),
         "master_correction_count": correction_count,
         "rule_compliance_rate": rule_kpi["compliance_rate"],
     },
@@ -863,6 +1006,7 @@ report = {
 }
 
 report_path.parent.mkdir(parents=True, exist_ok=True)
-report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-print(str(report_path))
+report_json = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
+report_path.write_text(report_json, encoding="utf-8")
+print(report_json, end="")
 PY

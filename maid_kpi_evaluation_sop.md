@@ -1,12 +1,12 @@
 ---
-version: "0.3"
-date: "2026-05-24"
+version: "0.4"
+date: "2026-05-25"
 author: "Codex + Alpha"
 path: "/Users/Alpha/Library/CloudStorage/Dropbox/PleiadesMaids/Skills/maid_kpi_evaluation_sop.md"
 status: draft
 ---
 
-> v0.3 changelog: 新增 m018-kpi-aggregator 部署章節（章節 9）+ launchd plist 設定 + DRY_RUN 試跑流程。v0.2 8-scanner 框架不變。
+> v0.4 changelog: 新增 per-role KPI scope、`out_of_scope` schema 欄位、mail mailbox join 精準化、Calendar timezone 欄位探測與 no-@ heuristic 升級。v0.3 m018-kpi-aggregator 章節不變。
 
 # Pleiades 七女僕 AI 系統 KPI 評估 SOP
 
@@ -73,7 +73,7 @@ status: draft
 
 每位女僕在本機執行 `kpi-eval.sh`。腳本由 launchd 或人工呼叫，讀取本機可用資料來源，輸出統一 JSON 到 Dropbox shared memory layer。
 
-### Scanner inventory v0.2
+### Scanner inventory v0.4
 
 - `scan_chat_db`：掃描 iMessage `chat.db`，估算主人糾正次數與 TG/iMessage 回覆節奏。
 - `scan_m017_logs`：掃描 m017 nightly merge logs，估算 merge 嘗試、成功與 TG 廣播送達。
@@ -84,10 +84,28 @@ status: draft
 - `scan_calendar`：讀取 Calendar Cache 與對話中的日期時間需求，估算行事曆建檔與時區正確率。
 - `scan_rule_compliance`：掃描 Alpha outbound iMessage，估算 no-@ no-reply 與罐頭回覆違規。
 
+### Per-role KPI Scope
+
+`kpi-eval.sh` 以 `ROLE_KPI_MAP` 等價的 `case/esac` scope 函式控管每位女僕的 KPI 範圍，避免 macOS 內建 Bash 3.x 不支援 associative array 的相容性問題。腳本未指定 `--maid` 或 `--maid-name` 時預設評估 Alpha。
+
+設計原則是 lead Alpha 評估全域營運 KPI，但不評估 Gamma 專責的 dish-counting；Gamma 聚焦 dish-counting、dashboard、response rhythm 與 rule compliance；Beta 偏技術與系統維運，因此包含 m017、dashboard、response rhythm、ad classification 與 rule compliance；Delta、Epsilon、Theta、Omega 只評估共通執勤 KPI。
+
+| Maid | In-scope KPI |
+|---|---|
+| Alpha | `mail_watchman`, `m017_nightly_merge`, `dashboard`, `response_rhythm`, `ad_classification`, `calendar`, `rule_compliance` |
+| Beta | `m017_nightly_merge`, `dashboard`, `response_rhythm`, `ad_classification`, `rule_compliance` |
+| Gamma | `dish_counting`, `dashboard`, `response_rhythm`, `rule_compliance` |
+| Delta | `dashboard`, `response_rhythm`, `rule_compliance` |
+| Epsilon | `dashboard`, `response_rhythm`, `rule_compliance` |
+| Theta | `dashboard`, `response_rhythm`, `rule_compliance` |
+| Omega | `dashboard`, `response_rhythm`, `rule_compliance` |
+
+不在該女僕職責內的 KPI 仍必須出現在 JSON 中，但該 KPI dict 只輸出 `{"out_of_scope": true}`。這與資料來源缺失或無資料的 `null` 不同：`out_of_scope=true` 表示不適用，`null` 表示適用但尚無可計算資料。
+
 ### 執行方式
 
 ```bash
-/Users/Alpha/Library/CloudStorage/Dropbox/PleiadesMaids/Scripts/kpi-eval.sh --maid-name Gamma
+/Users/Alpha/Library/CloudStorage/Dropbox/PleiadesMaids/Scripts/kpi-eval.sh --maid Gamma
 ```
 
 ### 輸入來源
@@ -108,11 +126,11 @@ status: draft
 
 ### 統一 JSON schema
 
-所有機器與所有女僕必須輸出相同 schema。未知值使用 `null`，不可省略必要欄位。百分比使用 0 到 1 的 number，計數使用 integer，時間使用 ISO 8601 或分鐘 number。
+所有機器與所有女僕必須輸出相同 schema。未知值使用 `null`，不可省略必要欄位。百分比使用 0 到 1 的 number，計數使用 integer，時間使用 ISO 8601 或分鐘 number。每個 per-KPI dict 必須包含 `out_of_scope`；不適用 KPI 只輸出 `{"out_of_scope": true}`，適用 KPI 輸出 `{"out_of_scope": false, ...metrics...}`。
 
 ```json
 {
-  "schema_version": "0.2",
+  "schema_version": "0.4",
   "report_date": "YYYY-MM-DD",
   "timezone": "Asia/Taipei",
   "maid": {
@@ -133,6 +151,7 @@ status: draft
   },
   "kpis": {
     "mail_watchman": {
+      "out_of_scope": false,
       "classification_accuracy_rate": null,
       "ad_false_positive_rate": null,
       "high_priority_miss_rate": null,
@@ -140,6 +159,7 @@ status: draft
       "errors": 0
     },
     "m017_nightly_merge": {
+      "out_of_scope": false,
       "completeness": null,
       "commit_success_rate": null,
       "tg_broadcast_delivery_rate": null,
@@ -147,32 +167,36 @@ status: draft
       "success_count": 0
     },
     "dish_counting": {
-      "report_accuracy_rate": null,
-      "step6_missed_count": 0,
-      "reviewed_total": 0
+      "out_of_scope": true
     },
     "dashboard": {
+      "out_of_scope": false,
       "sign_in_rate": null,
       "expected_sign_ins": 0,
       "actual_sign_ins": 0
     },
     "response_rhythm": {
+      "out_of_scope": false,
       "median_time_to_reply_minutes": null,
       "p95_time_to_reply_minutes": null,
       "master_correction_count": 0
     },
     "ad_classification": {
+      "out_of_scope": false,
       "accuracy_rate": null,
       "rule_coverage_rate": null,
       "regression_error_count": 0
     },
     "calendar": {
+      "out_of_scope": false,
       "event_entry_success_rate": null,
       "timezone_accuracy_rate": null,
+      "timezone_field": null,
       "expected_event_count": 0,
       "created_event_count": 0
     },
     "rule_compliance": {
+      "out_of_scope": false,
       "compliance_rate": null,
       "no_at_no_reply_violation_count": 0,
       "canned_response_violation_count": 0
@@ -201,6 +225,10 @@ status: draft
 }
 ```
 
+### Mail mailbox join SQL pattern
+
+`scan_mail_watchman` 必須先 introspect `mailboxes`，用可用的 label 欄位（目前本機為 `url`）尋找 `廣告`、`Ads`、`Junk` 類 mailbox，再以 `messages.mailbox = mailboxes.ROWID` join 計算當日廣告 mailbox 訊息。Gmail/IMAP 可能以 label-copy 表示移動而非實體 move，因此依 `feedback_gmail_imap_move` 使用當日 ad mailbox 內 `COUNT(DISTINCT messages.message_id)` 作為 inbox→ad-folder handling proxy；若找不到 ad mailbox，輸出 `source_status.mail_watchman = "no_ad_mailbox"`。
+
 ## 4. Integration Mechanism
 
 ### Option A：m017-nightly-merge 納入 KPI aggregation
@@ -215,7 +243,7 @@ m017 nightly merge 於每日 23:00 執行，可在合併記憶後順手讀取七
 
 ## 5. Report Cadence
 
-- Daily：每位女僕每日自評一次，由 launchd 或人工執行 `kpi-eval.sh --maid-name <MaidName>`，輸出當日 JSON。
+- Daily：每位女僕每日自評一次，由 launchd 或人工執行 `kpi-eval.sh --maid <MaidName>`，輸出當日 JSON。
 - Weekly Sunday：`m018-kpi-aggregator` 每週日彙整七位女僕最近 7 天 KPI，產生 weekly master report，並透過 TG/iMessage 回報主人與 Alpha。
 - Monthly 1st：每月 1 日產生上月 summary，列出趨勢、連續低於門檻項目、已完成改善、未完成改善、下月風險。
 
@@ -243,7 +271,7 @@ m017 nightly merge 於每日 23:00 執行，可在合併記憶後順手讀取七
 
 每日自評流程：
 
-1. 確認 `--maid-name` 為七女僕之一：Alpha、Beta、Gamma、Delta、Epsilon、Theta、Omega。
+1. 確認 `--maid` 或 `--maid-name` 為七女僕之一：Alpha、Beta、Gamma、Delta、Epsilon、Theta、Omega；未指定時預設 Alpha。
 2. 讀取 `chat.db`，掃描主人糾正關鍵字與可推導的回覆節奏。
 3. 讀取 m017 nightly merge logs，計算嘗試次數、成功次數、commit 成功率與 TG 廣播送達率。
 4. 讀取 Obsidian work logs 與 Dashboard，計算工作紀錄、簽到與例行任務完成情況。
@@ -266,5 +294,6 @@ m017 nightly merge 於每日 23:00 執行，可在合併記憶後順手讀取七
 
 ## Appendix B：Changelog
 
+- v0.4：新增 per-role KPI scope、schema_version 0.4、per-KPI `out_of_scope` 欄位、Mail `messages.mailbox` to `mailboxes.ROWID` join、Calendar timezone 欄位探測與 no-@ 前 5 則 inbound context heuristic。
 - v0.2：新增 `scan_mail_watchman`、`scan_dish_counting`、`scan_calendar`、`scan_rule_compliance` 四個 scanners，並將 `source_status` 與 `kpis` schema 對齊 8-scanner 輸出。
 - v0.1：建立 KPI 評估 SOP、統一 JSON schema 與初版四個 scanners。
